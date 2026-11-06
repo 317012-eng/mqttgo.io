@@ -1,0 +1,228 @@
+#include <WiFi.h>
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_NeoPixel.h>
+#include <AsyncMqttClient.h>
+
+extern "C" {
+#include "freertos/FreeRTOS.h"
+#include "freertos/timers.h"
+}
+
+// ==================== 網路與 MQTT 設定 ====================
+#define WIFI_SSID "aughtion"
+#define WIFI_PASSWORD "..aughtion"
+
+#define MQTT_HOST "mqttgo.io"
+#define MQTT_PORT 1883
+
+// MQTT 主題 (Topics)
+const char* topic_subscribe_all = "elec4f311/#";
+const char* topic_LED1          = "elec4f311/light/LED1";
+const char* topic_fsr_status    = "elec4f311/fsr/status";
+const char* topic_fsr_values    = "elec4f311/fsr/values";
+const char* topic_mpu_accel     = "elec4f311/mpu/accel";
+const char* topic_mpu_gyro      = "elec4f311/mpu/gyro";
+
+// ==================== 硬體腳位與參數設定 ====================
+#define LEDPin 2               // 測試用 LED 腳位 (GPIO 2)
+
+const int fsrPins[4] = {32, 33, 34, 35}; // 4 個 FSR ADC 腳位
+const int buzzerPin = 25;                // 蜂鳴器腳位
+
+#define LED_STRIP_PIN 13       // WS2812B 燈條 DIN 接 GPIO 13
+#define NUM_LEDS       8       // 燈條 LED 顆數
+const int pressureThreshold = 2000; // 壓力門檻值 (0-4095)
+
+// ==================== 物件與計時器宣告 ====================
+Adafruit_MPU6050 mpu;
+Adafruit_NeoPixel strip(NUM_LEDS, LED_STRIP_PIN, NEO_GRB + NEO_KHZ800);
+
+AsyncMqttClient mqttClient;
+TimerHandle_t mqttReconnectTimer;
+TimerHandle_t wifiReconnectTimer;
+
+// 使用 millis() 替代外部 Timer 庫，確保百分之百可編譯
+unsigned long lastMqttPublishTime = 0;
+const unsigned long publishInterval = 1000; // 每 1 秒發布一次 MQTT
+
+// 全域變數
+bool isAlerting = false;
+int fsrValues[4] = {0};
+sensors_event_t accel, gyro, temp;
+
+// ==================== WiFi & MQTT 任務函式 ====================
+void connectToWifi() {
+  if (WiFi.status() == WL_CONNECTED) return;
+  Serial.println("Connecting to Wi-Fi...");
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  int timeout = 0;
+  while (WiFi.status() != WL_CONNECTED && timeout < 20) {
+    delay(500);
+    Serial.print(".");
+    timeout++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWiFi connected, IP: " + WiFi.localIP().toString());
+  } else {
+    Serial.println("\nWiFi connection failed");
+  }
+}
+
+void connectToMqtt() {
+  if (WiFi.status() != WL_CONNECTED || mqttClient.connected()) return;
+  Serial.println("Connecting to MQTT...");
+  mqttClient.connect();
+}
+
+void WiFiEvent(WiFiEvent_t event) {
+  switch (event) {
+    case SYSTEM_EVENT_STA_GOT_IP:
+      Serial.println("WiFi connected");
+      connectToMqtt();
+      break;
+    case SYSTEM_EVENT_STA_DISCONNECTED:
+      Serial.println("WiFi lost connection");
+      xTimerStop(mqttReconnectTimer, 0);
+      xTimerStart(wifiReconnectTimer, 0);
+      break;
+    default:
+      break;
+  }
+}
+
+void onMqttConnect(bool sessionPresent) {
+  Serial.println("Connected to MQTT.");
+  mqttClient.subscribe(topic_subscribe_all, 1);
+}
+
+void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
+  Serial.println("Disconnected from MQTT.");
+  if (WiFi.isConnected()) {
+    xTimerStart(mqttReconnectTimer, 0);
+  }
+}
+
+void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
+  Serial.print("MQTT Topic: "); Serial.println(topic);
+
+  if (strcmp(topic, topic_LED1) == 0) {
+    if (strncmp((char *)payload, "on", len) == 0) {
+      digitalWrite(LEDPin, HIGH);
+    } else if (strncmp((char *)payload, "off", len) == 0) {
+      digitalWrite(LEDPin, LOW);
+    }
+  }
+}
+
+// ==================== 定時發布 MQTT 數據 ====================
+void publishSensorData() {
+  if (!mqttClient.connected()) return;
+
+  // 1. 發布 FSR 狀態與數據
+  mqttClient.publish(topic_fsr_status, 1, true, isAlerting ? "ALERT" : "SAFE");
+
+  String fsrJson = "{\"FSR1\":" + String(fsrValues[0]) + 
+                   ",\"FSR2\":" + String(fsrValues[1]) + 
+                   ",\"FSR3\":" + String(fsrValues[2]) + 
+                   ",\"FSR4\":" + String(fsrValues[3]) + "}";
+  mqttClient.publish(topic_fsr_values, 1, true, fsrJson.c_str());
+
+  // 2. 發布 MPU6050 數據
+  String accelJson = "{\"x\":" + String(accel.acceleration.x, 1) + 
+                     ",\"y\":" + String(accel.acceleration.y, 1) + 
+                     ",\"z\":" + String(accel.acceleration.z, 1) + "}";
+  mqttClient.publish(topic_mpu_accel, 1, true, accelJson.c_str());
+
+  String gyroJson = "{\"x\":" + String(gyro.gyro.x, 1) + 
+                    ",\"y\":" + String(gyro.gyro.y, 1) + 
+                    ",\"z\":" + String(gyro.gyro.z, 1) + "}";
+  mqttClient.publish(topic_mpu_gyro, 1, true, gyroJson.c_str());
+}
+
+// ==================== Setup 主程式 ====================
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(LEDPin, OUTPUT);
+  pinMode(buzzerPin, OUTPUT);
+  digitalWrite(buzzerPin, LOW);
+
+  strip.begin();
+  strip.setBrightness(50);
+  strip.show();
+
+  Serial.println("Initializing MPU6050...");
+  if (!mpu.begin()) {
+    Serial.println("MPU6050 connection failed!");
+    while (1) { delay(10); }
+  }
+  Serial.println("MPU6050 initialized.");
+  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+
+  mqttReconnectTimer = xTimerCreate("mqttTimer", pdMS_TO_TICKS(10000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToMqtt));
+  wifiReconnectTimer = xTimerCreate("wifiTimer", pdMS_TO_TICKS(10000), pdFALSE, (void*)0, reinterpret_cast<TimerCallbackFunction_t>(connectToWifi));
+
+  WiFi.onEvent(WiFiEvent);
+  mqttClient.setServer(MQTT_HOST, MQTT_PORT);
+  mqttClient.onConnect(onMqttConnect);
+  mqttClient.onDisconnect(onMqttDisconnect);
+  mqttClient.onMessage(onMqttMessage);
+
+  connectToWifi();
+}
+
+// ==================== Loop 主循環 ====================
+void loop() {
+  // 1. 定時觸發 MQTT 發布
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastMqttPublishTime >= publishInterval) {
+    lastMqttPublishTime = currentMillis;
+    publishSensorData();
+  }
+
+  // 2. 讀取 FSR 壓力感測器
+  isAlerting = false;
+  for (int i = 0; i < 4; i++) {
+    fsrValues[i] = analogRead(fsrPins[i]);
+    if (fsrValues[i] > pressureThreshold) {
+      isAlerting = true;
+    }
+  }
+
+  // 3. 警報 logic (蜂鳴器 + WS2812B 燈條)
+  if (isAlerting) {
+    digitalWrite(buzzerPin, HIGH);
+    for (int i = 0; i < NUM_LEDS; i++) {
+      strip.setPixelColor(i, strip.Color(255, 0, 0));
+    }
+  } else {
+    digitalWrite(buzzerPin, LOW);
+    for (int i = 0; i < NUM_LEDS; i++) {
+      strip.setPixelColor(i, strip.Color(0, 255, 0));
+    }
+  }
+  strip.show();
+
+  // 4. 讀取 MPU6050 六軸數據
+  mpu.getEvent(&accel, &gyro, &temp);
+
+  // 5. 印出除錯訊息至 Serial Monitor
+  Serial.print("FSR: ");
+  for (int i = 0; i < 4; i++) {
+    Serial.print(fsrValues[i]); Serial.print(" ");
+  }
+  Serial.print("| Accel X:"); Serial.print(accel.acceleration.x, 1);
+  Serial.print(" Y:"); Serial.print(accel.acceleration.y, 1);
+  Serial.print(" Z:"); Serial.print(accel.acceleration.z, 1);
+  Serial.print(" | Gyro X:"); Serial.print(gyro.gyro.x, 1);
+  Serial.print(" Y:"); Serial.print(gyro.gyro.y, 1);
+  Serial.print(" Z:"); Serial.println(gyro.gyro.z, 1);
+
+  delay(200);
+}
