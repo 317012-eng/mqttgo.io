@@ -3,492 +3,355 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MQTT LED & SR04 遙測儀表板</title>
-    <!-- Tailwind CSS -->
+    <title>ESP32 MQTTGO 即時監控與控制台</title>
+    <!-- 引入 Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Font Awesome Icons -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- MQTT.js Browser Library -->
-    <script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
-    
+    <!-- 引入 Font Awesome 圖示庫 -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <!-- 引入 Google Fonts (Inter 與 Noto Sans TC) -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+    <!-- 引入 MQTT.js 庫 -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-        
         body {
-            font-family: 'Inter', sans-serif;
-            background-color: #0f172a;
-            color: #f8fafc;
+            font-family: 'Inter', 'Noto Sans TC', sans-serif;
         }
-
-        .code-font {
-            font-family: 'JetBrains Mono', monospace;
+        @keyframes pulse-danger {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.01); opacity: 0.85; }
         }
-
-        /* LED Glowing Effect */
-        .led-glow-on {
-            box-shadow: 0 0 50px rgba(250, 204, 21, 0.6), 0 0 100px rgba(234, 179, 8, 0.3);
-            background: radial-gradient(circle, #fef08a 0%, #eab308 60%, #ca8a04 100%);
-            color: #713f12;
-        }
-
-        .led-glow-off {
-            box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.8);
-            background: #1e293b;
-            color: #475569;
-        }
-
-        /* Custom Scrollbar for Terminal */
-        ::-webkit-scrollbar {
-            width: 6px;
-        }
-        ::-webkit-scrollbar-track {
-            background: #0f172a;
-        }
-        ::-webkit-scrollbar-thumb {
-            background: #334155;
-            border-radius: 3px;
+        .animate-danger {
+            animation: pulse-danger 0.8s infinite ease-in-out;
         }
     </style>
 </head>
-<body class="min-h-screen flex flex-col justify-between p-4 md:p-8">
+<body class="bg-slate-100 text-slate-800 min-h-screen py-6 px-4 sm:px-6 lg:px-8">
 
-    <div class="max-w-6xl mx-auto w-full">
-        <!-- Header -->
-        <header class="flex flex-col sm:flex-row justify-between items-center mb-8 pb-4 border-b border-slate-800 gap-4">
-            <div class="flex items-center gap-3">
-                <div class="p-3 bg-amber-500/10 text-amber-400 rounded-xl border border-amber-500/20">
-                    <i class="fa-solid fa-microchip text-2xl"></i>
-                </div>
-                <div>
-                    <h1 class="text-2xl font-bold tracking-tight bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">
-                        ESP32 IoT 遠端儀表板
-                    </h1>
-                    <p class="text-xs text-slate-400">MQTT Controller & SR04 Ultrasonic Sensor</p>
-                </div>
+    <div class="max-w-4xl mx-auto space-y-6">
+        
+        <!-- 頂部標題與連線狀態列 -->
+        <header class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <div>
+                <h1 class="text-xl sm:text-2xl font-bold text-slate-900 flex items-center gap-2.5">
+                    <span class="bg-blue-600 text-white p-2 rounded-xl shadow-sm">
+                        <i class="fa-solid fa-microchip"></i>
+                    </span>
+                    ESP32 感測器監控儀表板
+                </h1>
+                <p class="text-xs sm:text-sm text-slate-500 mt-1.5 flex flex-wrap items-center gap-2">
+                    <span>Broker: <code class="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700 font-mono">mqttgo.io:8084</code></span>
+                    <span>•</span>
+                    <span>Prefix: <code class="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700 font-mono">elec4f311/</code></span>
+                </p>
             </div>
-
-            <!-- Connection Status Badge -->
-            <div id="statusBadge" class="flex items-center gap-2.5 px-4 py-2 rounded-full bg-slate-800 border border-slate-700/80 text-sm font-medium transition-all duration-300">
-                <span id="statusDot" class="w-3 h-3 rounded-full bg-slate-500 animate-pulse"></span>
-                <span id="statusText" class="text-slate-300">尚未連線</span>
+            
+            <div class="flex items-center gap-3 self-end sm:self-center">
+                <span id="last-update" class="text-xs text-slate-400 hidden sm:inline">等待數據...</span>
+                <span id="mqtt-status" class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-sm font-semibold bg-slate-200 text-slate-700 transition-colors">
+                    <span class="w-2 h-2 rounded-full bg-slate-500 animate-ping"></span>
+                    連線中...
+                </span>
             </div>
         </header>
 
-        <!-- Main Dashboard Content -->
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-
-            <!-- Left Col: LED Controller & SR04 Sensor Display -->
-            <div class="lg:col-span-7 flex flex-col gap-6">
-                
-                <!-- Main Control Panel: LED -->
-                <div class="bg-slate-800/60 backdrop-blur-md rounded-2xl p-6 border border-slate-700/60 shadow-xl flex flex-col items-center justify-between">
-                    <div class="w-full flex justify-between items-center mb-4">
-                        <span class="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                            <i class="fa-solid fa-lightbulb text-amber-400"></i> 主開關控制面板 (LED)
-                        </span>
-                        <span id="topicDisplay" class="text-xs code-font px-2.5 py-1 bg-slate-900 rounded-md text-amber-400 border border-slate-700">
-                            elec4f311/light/LED1
-                        </span>
-                    </div>
-
-                    <!-- Visual LED Lamp -->
-                    <div class="my-4 flex flex-col items-center">
-                        <div id="ledVisual" class="w-28 h-28 rounded-full led-glow-off flex items-center justify-center transition-all duration-500 border-4 border-slate-700/50">
-                            <i id="ledIcon" class="fa-solid fa-lightbulb text-5xl transition-all duration-300"></i>
-                        </div>
-                        <div class="mt-3 text-center">
-                            <span id="ledStateText" class="text-lg font-bold text-slate-400 tracking-wider">STATUS: UNKNOWN</span>
-                        </div>
-                    </div>
-
-                    <!-- Control Action Buttons -->
-                    <div class="w-full grid grid-cols-2 gap-4 mt-2">
-                        <button id="btnOn" onclick="sendMQTTCommand('on')" class="py-3 px-6 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 active:scale-95 text-white font-bold shadow-lg shadow-emerald-900/30 border border-emerald-500/30 flex items-center justify-center gap-2 transition-all">
-                            <i class="fa-solid fa-power-off"></i> 開燈 (ON)
-                        </button>
-
-                        <button id="btnOff" onclick="sendMQTTCommand('off')" class="py-3 px-6 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 active:scale-95 text-white font-bold shadow-lg shadow-rose-900/30 border border-rose-500/30 flex items-center justify-center gap-2 transition-all">
-                            <i class="fa-solid fa-circle-xmark"></i> 關燈 (OFF)
-                        </button>
-                    </div>
-                </div>
-
-                <!-- SR04 Ultrasonic Telemetry Display -->
-                <div class="bg-slate-800/60 backdrop-blur-md rounded-2xl p-6 border border-slate-700/60 shadow-xl">
-                    <div class="w-full flex justify-between items-center mb-4">
-                        <span class="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                            <i class="fa-solid fa-ruler-horizontal text-cyan-400"></i> SR04 超音波距離監測
-                        </span>
-                        <span class="text-xs code-font px-2.5 py-1 bg-slate-900 rounded-md text-cyan-400 border border-slate-700">
-                            elec4f311/distance
-                        </span>
-                    </div>
-
-                    <div class="grid grid-cols-1 sm:grid-cols-12 gap-4 items-center my-2">
-                        <div class="sm:col-span-5 flex flex-col items-center sm:items-start justify-center bg-slate-900/80 p-4 rounded-xl border border-slate-800">
-                            <span class="text-xs text-slate-400 mb-1">即時測量距離</span>
-                            <div class="flex items-baseline gap-1">
-                                <span id="distanceVal" class="text-4xl font-extrabold code-font text-cyan-400">--.-</span>
-                                <span class="text-sm font-semibold text-slate-400">cm</span>
-                            </div>
-                            <span id="distanceStatus" class="mt-2 text-xs font-medium px-2 py-0.5 rounded-md bg-slate-800 text-slate-400">等待數據中...</span>
-                        </div>
-
-                        <!-- Progress Bar & Gauge -->
-                        <div class="sm:col-span-7 flex flex-col gap-2">
-                            <div class="flex justify-between text-xs text-slate-400">
-                                <span>近距離 (0cm)</span>
-                                <span>遠距離 (200cm)</span>
-                            </div>
-                            <div class="w-full h-4 bg-slate-900 rounded-full overflow-hidden p-0.5 border border-slate-700/60">
-                                <div id="distanceBar" class="h-full bg-gradient-to-r from-emerald-500 via-cyan-400 to-amber-500 rounded-full transition-all duration-300 w-0"></div>
-                            </div>
-                            <p class="text-[11px] text-slate-500 italic mt-1">更新頻率由 ESP32 BlynkTimer 自動推送。</p>
-                        </div>
-                    </div>
-                </div>
-
-            </div>
-
-            <!-- Right Col: MQTT Broker Settings & Terminal Log -->
-            <div class="lg:col-span-5 flex flex-col gap-6">
-                <!-- Broker Settings Panel -->
-                <div class="bg-slate-800/60 backdrop-blur-md rounded-2xl p-6 border border-slate-700/60 shadow-xl">
-                    <h2 class="text-lg font-semibold text-slate-200 mb-4 flex items-center gap-2">
-                        <i class="fa-solid fa-sliders text-amber-400"></i> 連線參數設定
-                    </h2>
-
-                    <div class="space-y-3">
-                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                            <div class="sm:col-span-2">
-                                <label class="block text-xs font-medium text-slate-400 mb-1">Broker 主機 (WSS)</label>
-                                <input type="text" id="mqttHost" value="MQTTGO.io" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm code-font focus:outline-none focus:border-amber-500 text-slate-200">
-                            </div>
-                            <div>
-                                <label class="block text-xs font-medium text-slate-400 mb-1">Port 埠號</label>
-                                <input type="number" id="mqttPort" value="8084" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm code-font focus:outline-none focus:border-amber-500 text-slate-200">
-                            </div>
-                        </div>
-
-                        <div>
-                            <label class="block text-xs font-medium text-slate-400 mb-1">MQTT 全域訂閱 Topic (Wildcard)</label>
-                            <input type="text" id="mqttSubTopic" value="elec4f311/#" class="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm code-font focus:outline-none focus:border-amber-500 text-slate-200">
-                        </div>
-
-                        <div class="grid grid-cols-2 gap-3 pt-2">
-                            <button id="btnConnect" onclick="toggleConnect()" class="w-full py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 active:scale-95 text-slate-950 font-bold transition-all shadow-md flex items-center justify-center gap-2">
-                                <i class="fa-solid fa-plug"></i> 連接 Broker
-                            </button>
-                            <button id="btnClearLog" onclick="clearTerminal()" class="w-full py-2.5 rounded-lg bg-slate-700 hover:bg-slate-600 active:scale-95 text-slate-300 font-semibold transition-all flex items-center justify-center gap-2">
-                                <i class="fa-solid fa-trash-can"></i> 清除日誌
-                            </button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Real-time Activity Terminal Log -->
-                <div class="bg-slate-900/90 rounded-2xl p-4 border border-slate-800 shadow-inner flex flex-col flex-1 min-h-[220px]">
-                    <div class="flex justify-between items-center mb-2 pb-2 border-b border-slate-800">
-                        <span class="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                            <i class="fa-solid fa-terminal text-emerald-400"></i> 通訊日誌 (Terminal)
-                        </span>
-                        <span class="text-[10px] text-slate-500 code-font">WSS / Elec4f311</span>
-                    </div>
-
-                    <!-- Log Output Window -->
-                    <div id="terminalLog" class="flex-1 code-font text-xs space-y-1.5 overflow-y-auto max-h-[200px] p-1 text-slate-300">
-                        <div class="text-slate-500 italic">[系統] 點擊「連接 Broker」開啟 ESP32 MQTT 數據監控...</div>
-                    </div>
+        <!-- 壓力警報狀態橫幅 (elec4f311/fsr/status) -->
+        <section id="alert-banner" class="bg-emerald-50 border-2 border-emerald-200 text-emerald-800 rounded-2xl p-4 sm:p-5 text-center shadow-sm transition-all duration-300">
+            <div class="flex items-center justify-center gap-3">
+                <i id="alert-icon" class="fa-solid fa-shield-halved text-2xl sm:text-3xl text-emerald-600"></i>
+                <div class="text-left sm:text-center">
+                    <h2 id="alert-text" class="text-lg sm:text-xl font-bold tracking-wide">SAFE (系統安全狀態)</h2>
+                    <p id="alert-subtext" class="text-xs sm:text-sm opacity-80">所有 FSR 壓力感測器數值皆低於門檻值 (2000)</p>
                 </div>
             </div>
+        </section>
 
+        <!-- 感測器數據網格 -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            
+            <!-- FSR 4 頻道壓力感測器 (elec4f311/fsr/values) -->
+            <section class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 flex flex-col justify-between">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="font-bold text-slate-700 flex items-center gap-2">
+                        <i class="fa-solid fa-gauge-high text-indigo-500"></i>
+                        FSR 壓力感測器
+                    </h3>
+                    <span class="text-xs font-medium bg-indigo-50 text-indigo-600 px-2.5 py-1 rounded-lg">範圍: 0 - 4095</span>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3.5">
+                    <!-- FSR 1 -->
+                    <div class="bg-slate-50 border border-slate-100 rounded-xl p-3.5 text-center transition hover:border-indigo-200">
+                        <div class="text-xs font-medium text-slate-500 mb-1">FSR 1 <span class="text-slate-400">(GPIO 32)</span></div>
+                        <div id="fsr-1" class="text-2xl sm:text-3xl font-bold text-slate-800 font-mono">0</div>
+                        <div class="w-full bg-slate-200 h-1.5 rounded-full mt-2 overflow-hidden">
+                            <div id="fsr-bar-1" class="bg-indigo-500 h-full transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                    </div>
+
+                    <!-- FSR 2 -->
+                    <div class="bg-slate-50 border border-slate-100 rounded-xl p-3.5 text-center transition hover:border-indigo-200">
+                        <div class="text-xs font-medium text-slate-500 mb-1">FSR 2 <span class="text-slate-400">(GPIO 33)</span></div>
+                        <div id="fsr-2" class="text-2xl sm:text-3xl font-bold text-slate-800 font-mono">0</div>
+                        <div class="w-full bg-slate-200 h-1.5 rounded-full mt-2 overflow-hidden">
+                            <div id="fsr-bar-2" class="bg-indigo-500 h-full transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                    </div>
+
+                    <!-- FSR 3 -->
+                    <div class="bg-slate-50 border border-slate-100 rounded-xl p-3.5 text-center transition hover:border-indigo-200">
+                        <div class="text-xs font-medium text-slate-500 mb-1">FSR 3 <span class="text-slate-400">(GPIO 34)</span></div>
+                        <div id="fsr-3" class="text-2xl sm:text-3xl font-bold text-slate-800 font-mono">0</div>
+                        <div class="w-full bg-slate-200 h-1.5 rounded-full mt-2 overflow-hidden">
+                            <div id="fsr-bar-3" class="bg-indigo-500 h-full transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                    </div>
+
+                    <!-- FSR 4 -->
+                    <div class="bg-slate-50 border border-slate-100 rounded-xl p-3.5 text-center transition hover:border-indigo-200">
+                        <div class="text-xs font-medium text-slate-500 mb-1">FSR 4 <span class="text-slate-400">(GPIO 35)</span></div>
+                        <div id="fsr-4" class="text-2xl sm:text-3xl font-bold text-slate-800 font-mono">0</div>
+                        <div class="w-full bg-slate-200 h-1.5 rounded-full mt-2 overflow-hidden">
+                            <div id="fsr-bar-4" class="bg-indigo-500 h-full transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- MPU6050 六軸姿態感測器 (elec4f311/mpu/accel & gyro) -->
+            <section class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 flex flex-col justify-between">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="font-bold text-slate-700 flex items-center gap-2">
+                        <i class="fa-solid fa-compass text-sky-500"></i>
+                        MPU6050 六軸姿態
+                    </h3>
+                    <span class="text-xs font-medium bg-sky-50 text-sky-600 px-2.5 py-1 rounded-lg">I2C 感測器</span>
+                </div>
+
+                <div class="space-y-4">
+                    <!-- 加速度計 Accel -->
+                    <div>
+                        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">加速度 Accel (m/s²)</div>
+                        <div class="grid grid-cols-3 gap-2.5 text-center">
+                            <div class="bg-slate-50 border border-slate-100 rounded-xl p-2.5">
+                                <div class="text-xs text-slate-500">X 軸</div>
+                                <div id="acc-x" class="text-lg sm:text-xl font-bold text-slate-800 font-mono mt-0.5">0.0</div>
+                            </div>
+                            <div class="bg-slate-50 border border-slate-100 rounded-xl p-2.5">
+                                <div class="text-xs text-slate-500">Y 軸</div>
+                                <div id="acc-y" class="text-lg sm:text-xl font-bold text-slate-800 font-mono mt-0.5">0.0</div>
+                            </div>
+                            <div class="bg-slate-50 border border-slate-100 rounded-xl p-2.5">
+                                <div class="text-xs text-slate-500">Z 軸</div>
+                                <div id="acc-z" class="text-lg sm:text-xl font-bold text-slate-800 font-mono mt-0.5">0.0</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 陀螺儀 Gyro -->
+                    <div>
+                        <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">角速度 Gyro (rad/s)</div>
+                        <div class="grid grid-cols-3 gap-2.5 text-center">
+                            <div class="bg-slate-50 border border-slate-100 rounded-xl p-2.5">
+                                <div class="text-xs text-slate-500">X 軸</div>
+                                <div id="gyro-x" class="text-lg sm:text-xl font-bold text-slate-800 font-mono mt-0.5">0.0</div>
+                            </div>
+                            <div class="bg-slate-50 border border-slate-100 rounded-xl p-2.5">
+                                <div class="text-xs text-slate-500">Y 軸</div>
+                                <div id="gyro-y" class="text-lg sm:text-xl font-bold text-slate-800 font-mono mt-0.5">0.0</div>
+                            </div>
+                            <div class="bg-slate-50 border border-slate-100 rounded-xl p-2.5">
+                                <div class="text-xs text-slate-500">Z 軸</div>
+                                <div id="gyro-z" class="text-lg sm:text-xl font-bold text-slate-800 font-mono mt-0.5">0.0</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
         </div>
 
-        <footer class="mt-8 text-center text-xs text-slate-500 border-t border-slate-800/60 pt-4">
-            MQTT Client Protocol: WSS (WebSocket Secure) | Node Base Topic: <span class="text-slate-400 font-mono">elec4f311/#</span>
-        </footer>
+        <!-- 遠端硬體控制區 (elec4f311/light/LED1) -->
+        <section class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                    <h3 class="font-bold text-slate-700 flex items-center gap-2">
+                        <i class="fa-solid fa-toggle-on text-amber-500"></i>
+                        遠端硬體控制
+                    </h3>
+                    <p class="text-xs text-slate-500 mt-1">控制 ESP32 板載 LED (<code class="text-slate-700">GPIO 2</code>) • 主題: <code class="text-slate-700">elec4f311/light/LED1</code></p>
+                </div>
+
+                <div class="flex items-center gap-3 w-full sm:w-auto">
+                    <button type="button" onclick="controlLED('on')" class="flex-1 sm:flex-initial inline-flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-semibold px-5 py-3 rounded-xl shadow-sm transition cursor-pointer">
+                        <i class="fa-solid fa-lightbulb"></i>
+                        點亮 LED (ON)
+                    </button>
+                    <button type="button" onclick="controlLED('off')" class="flex-1 sm:flex-initial inline-flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 active:scale-95 text-white font-semibold px-5 py-3 rounded-xl shadow-sm transition cursor-pointer">
+                        <i class="fa-regular fa-lightbulb"></i>
+                        熄滅 LED (OFF)
+                    </button>
+                </div>
+            </div>
+            
+            <!-- 操作回饋提示框 (取代 alert) -->
+            <div id="toast-msg" class="mt-3 text-xs font-medium text-blue-600 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 hidden">
+                指令已發送！
+            </div>
+        </section>
+
     </div>
 
     <script>
-        // Global Client & State Variables
-        let client = null;
-        let isConnected = false;
+        // ==================== MQTT 主題設定 (與 ESP32 程式碼完全一致) ====================
+        const topic_subscribe_all = "elec4f311/#";
+        const topic_LED1          = "elec4f311/light/LED1";
+        const topic_fsr_status    = "elec4f311/fsr/status";
+        const topic_fsr_values    = "elec4f311/fsr/values";
+        const topic_mpu_accel     = "elec4f311/mpu/accel";
+        const topic_mpu_gyro      = "elec4f311/mpu/gyro";
 
-        // UI Element References
-        const statusBadge = document.getElementById('statusBadge');
-        const statusDot = document.getElementById('statusDot');
-        const statusText = document.getElementById('statusText');
-        const btnConnect = document.getElementById('btnConnect');
-        const ledVisual = document.getElementById('ledVisual');
-        const ledIcon = document.getElementById('ledIcon');
-        const ledStateText = document.getElementById('ledStateText');
-        const terminalLog = document.getElementById('terminalLog');
-        
-        // SR04 UI Elements
-        const distanceVal = document.getElementById('distanceVal');
-        const distanceBar = document.getElementById('distanceBar');
-        const distanceStatus = document.getElementById('distanceStatus');
+        // 使用 Secure WebSocket 連線至 mqttgo.io
+        const brokerUrl = 'wss://mqttgo.io:8084/mqtt';
 
-        function toggleConnect() {
-            if (isConnected) {
-                disconnectMQTT();
-            } else {
-                connectMQTT();
-            }
-        }
+        const client = mqtt.connect(brokerUrl, {
+            clientId: 'web_dashboard_' + Math.random().toString(16).substr(2, 8),
+            clean: true,
+            connectTimeout: 4000,
+            reconnectPeriod: 1000
+        });
 
-        function connectMQTT() {
-            const host = document.getElementById('mqttHost').value.trim();
-            const port = document.getElementById('mqttPort').value.trim();
-            const subTopic = document.getElementById('mqttSubTopic').value.trim();
+        // UI 參照元素
+        const statusBadge  = document.getElementById('mqtt-status');
+        const lastUpdateEl = document.getElementById('last-update');
+        const alertBanner  = document.getElementById('alert-banner');
+        const alertIcon    = document.getElementById('alert-icon');
+        const alertText    = document.getElementById('alert-text');
+        const alertSubtext = document.getElementById('alert-subtext');
+        const toastMsg     = document.getElementById('toast-msg');
 
-            if (!host || !port) {
-                logToTerminal('錯誤: 請填寫完整的 Broker 主機與 Port 號碼', 'error');
-                return;
-            }
-
-            const brokerUrl = `wss://${host}:${port}/mqtt`;
-            const clientId = 'web_ctrl_' + Math.random().toString(16).substring(2, 10);
-
-            logToTerminal(`連線中: ${brokerUrl}...`, 'info');
-            updateStatusUI('connecting');
-            btnConnect.disabled = true;
-
-            try {
-                client = mqtt.connect(brokerUrl, {
-                    clientId: clientId,
-                    clean: true,
-                    connectTimeout: 5000,
-                    reconnectPeriod: 2000,
-                });
-
-                client.on('connect', () => {
-                    isConnected = true;
-                    btnConnect.disabled = false;
-                    btnConnect.innerHTML = `<i class="fa-solid fa-plug-circle-xmark"></i> 中斷連線`;
-                    btnConnect.classList.remove('bg-amber-500', 'hover:bg-amber-400');
-                    btnConnect.classList.add('bg-rose-600', 'hover:bg-rose-500', 'text-white');
-
-                    updateStatusUI('connected');
-                    logToTerminal(`成功連接至 Broker (${host}:${port})`, 'success');
-
-                    // Subscribe to wildcard topic elec4f311/#
-                    subscribeTopic(subTopic);
-                });
-
-                client.on('message', (receivedTopic, payload) => {
-                    const messageStr = payload.toString().trim();
-                    logToTerminal(`[接收] ${receivedTopic} → ${messageStr}`, 'receive');
-                    
-                    // Route received topic to specific handler
-                    if (receivedTopic === 'elec4f311/light/LED1') {
-                        handleIncomingLEDState(messageStr);
-                    } else if (receivedTopic === 'elec4f311/distance') {
-                        handleIncomingDistance(messageStr);
-                    }
-                });
-
-                client.on('error', (err) => {
-                    logToTerminal(`[錯誤] ${err.message || err}`, 'error');
-                    updateStatusUI('disconnected');
-                });
-
-                client.on('close', () => {
-                    if (isConnected) {
-                        logToTerminal(`[斷線] 與 Broker 的連線已斷開`, 'warning');
-                        updateStatusUI('disconnected');
-                        resetConnectButtonUI();
-                    }
-                });
-
-            } catch (err) {
-                logToTerminal(`[異常] ${err.message}`, 'error');
-                btnConnect.disabled = false;
-                updateStatusUI('disconnected');
-            }
-        }
-
-        function disconnectMQTT() {
-            if (client) {
-                client.end(false, () => {
-                    logToTerminal('已手動中斷連線', 'info');
-                    resetConnectButtonUI();
-                    updateStatusUI('disconnected');
-                });
-            }
-        }
-
-        function resetConnectButtonUI() {
-            isConnected = false;
-            btnConnect.disabled = false;
-            btnConnect.innerHTML = `<i class="fa-solid fa-plug"></i> 連接 Broker`;
-            btnConnect.classList.remove('bg-rose-600', 'hover:bg-rose-500', 'text-white');
-            btnConnect.classList.add('bg-amber-500', 'hover:bg-amber-400', 'text-slate-950');
-        }
-
-        function subscribeTopic(topic) {
-            if (client && isConnected) {
-                client.subscribe(topic, { qos: 0 }, (err) => {
-                    if (!err) {
-                        logToTerminal(`已成功訂閱主題: ${topic}`, 'success');
-                    } else {
-                        logToTerminal(`訂閱主題失敗: ${err.message}`, 'error');
-                    }
-                });
-            }
-        }
-
-        function sendMQTTCommand(command) {
-            const topic = 'elec4f311/light/LED1';
-            playClickAudio();
-
-            if (!client || !isConnected) {
-                logToTerminal(`請先點擊「連接 Broker」進行連線。`, 'warning');
-                updateLEDVisual(command === 'on');
-                return;
-            }
-
-            client.publish(topic, command, { qos: 0, retain: false }, (err) => {
-                if (!err) {
-                    logToTerminal(`[發送] ${topic} → "${command}"`, 'send');
-                    updateLEDVisual(command === 'on');
-                } else {
-                    logToTerminal(`發送失敗: ${err.message}`, 'error');
-                }
+        // 連線成功事件
+        client.on('connect', () => {
+            statusBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-emerald-500"></span> 已連線 (Online)';
+            statusBadge.className = 'inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-sm font-semibold bg-emerald-100 text-emerald-800';
+            
+            client.subscribe(topic_subscribe_all, (err) => {
+                if (!err) console.log("已訂閱主題:", topic_subscribe_all);
             });
+        });
+
+        // 連線錯誤事件
+        client.on('error', (err) => {
+            console.error("MQTT 連線錯誤:", err);
+            statusBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-rose-500"></span> 連線失敗 (Error)';
+            statusBadge.className = 'inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-sm font-semibold bg-rose-100 text-rose-800';
+        });
+
+        // 斷線事件
+        client.on('offline', () => {
+            statusBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-amber-500"></span> 斷線重連中...';
+            statusBadge.className = 'inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-sm font-semibold bg-amber-100 text-amber-800';
+        });
+
+        // 更新最後接收時間
+        function updateTimestamp() {
+            const now = new Date();
+            lastUpdateEl.innerText = '最後更新: ' + now.toLocaleTimeString('zh-TW', { hour12: false });
         }
 
-        function handleIncomingLEDState(payloadText) {
-            const cleaned = payloadText.trim().toLowerCase();
-            if (cleaned === 'on' || cleaned === '1' || cleaned === 'true') {
-                updateLEDVisual(true);
-            } else if (cleaned === 'off' || cleaned === '0' || cleaned === 'false') {
-                updateLEDVisual(false);
+        // 接收訊息並渲染至畫面
+        client.on('message', (topic, payload) => {
+            const msg = payload.toString();
+            updateTimestamp();
+
+            // 1. 處理壓力警報狀態 (ALERT / SAFE)
+            if (topic === topic_fsr_status) {
+                if (msg === 'ALERT') {
+                    alertBanner.className = 'bg-rose-50 border-2 border-rose-300 text-rose-800 rounded-2xl p-4 sm:p-5 text-center shadow-md animate-danger transition-all duration-300';
+                    alertIcon.className   = 'fa-solid fa-triangle-exclamation text-2xl sm:text-3xl text-rose-600';
+                    alertText.innerText   = 'ALERT (壓力過高警報！)';
+                    alertSubtext.innerText = '偵測到壓力超過門檻值 (2000)，蜂鳴器與紅燈已啟動';
+                } else {
+                    alertBanner.className = 'bg-emerald-50 border-2 border-emerald-200 text-emerald-800 rounded-2xl p-4 sm:p-5 text-center shadow-sm transition-all duration-300';
+                    alertIcon.className   = 'fa-solid fa-shield-halved text-2xl sm:text-3xl text-emerald-600';
+                    alertText.innerText   = 'SAFE (系統安全狀態)';
+                    alertSubtext.innerText = '所有 FSR 壓力感測器數值皆低於門檻值 (2000)';
+                }
             }
-        }
 
-        function handleIncomingDistance(payloadText) {
-            const dist = parseFloat(payloadText);
-            if (isNaN(dist)) return;
+            // 2. 處理 FSR 4 頻道數值與進度條
+            if (topic === topic_fsr_values) {
+                try {
+                    const data = JSON.parse(msg);
+                    updateFsrCard(1, data.FSR1 ?? 0);
+                    updateFsrCard(2, data.FSR2 ?? 0);
+                    updateFsrCard(3, data.FSR3 ?? 0);
+                    updateFsrCard(4, data.FSR4 ?? 0);
+                } catch (e) {
+                    console.error("FSR JSON 解析失敗:", e);
+                }
+            }
 
-            distanceVal.innerText = dist.toFixed(1);
+            // 3. 處理 MPU6050 加速度數值
+            if (topic === topic_mpu_accel) {
+                try {
+                    const data = JSON.parse(msg);
+                    document.getElementById('acc-x').innerText = Number(data.x ?? 0).toFixed(1);
+                    document.getElementById('acc-y').innerText = Number(data.y ?? 0).toFixed(1);
+                    document.getElementById('acc-z').innerText = Number(data.z ?? 0).toFixed(1);
+                } catch (e) {}
+            }
 
-            // Calculate percentage based on max 200cm
-            const percentage = Math.min(Math.max((dist / 200) * 100, 0), 100);
-            distanceBar.style.width = `${percentage}%`;
+            // 4. 處理 MPU6050 角速度數值
+            if (topic === topic_mpu_gyro) {
+                try {
+                    const data = JSON.parse(msg);
+                    document.getElementById('gyro-x').innerText = Number(data.x ?? 0).toFixed(1);
+                    document.getElementById('gyro-y').innerText = Number(data.y ?? 0).toFixed(1);
+                    document.getElementById('gyro-z').innerText = Number(data.z ?? 0).toFixed(1);
+                } catch (e) {}
+            }
+        });
 
-            // Distance Status text and badge style
-            if (dist <= 15) {
-                distanceStatus.innerText = '⚠️ 過近 (Proximity Warning)';
-                distanceStatus.className = 'mt-2 text-xs font-semibold px-2.5 py-0.5 rounded-md bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse';
-            } else if (dist <= 80) {
-                distanceStatus.innerText = '✅ 適中 (Normal Range)';
-                distanceStatus.className = 'mt-2 text-xs font-semibold px-2.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
+        // 更新單一 FSR 數值與進度條顏色
+        function updateFsrCard(index, val) {
+            const numVal = Number(val);
+            const valEl = document.getElementById(`fsr-${index}`);
+            const barEl = document.getElementById(`fsr-bar-${index}`);
+            
+            valEl.innerText = numVal;
+            const pct = Math.min(100, Math.max(0, (numVal / 4095) * 100));
+            barEl.style.width = `${pct}%`;
+
+            // 超過 2000 門檻值時進度條變紅色
+            if (numVal > 2000) {
+                barEl.className = 'bg-rose-500 h-full transition-all duration-300';
+                valEl.className = 'text-2xl sm:text-3xl font-bold text-rose-600 font-mono';
             } else {
-                distanceStatus.innerText = 'ℹ️ 較遠 (Far Range)';
-                distanceStatus.className = 'mt-2 text-xs font-semibold px-2.5 py-0.5 rounded-md bg-cyan-500/20 text-cyan-400 border border-cyan-500/30';
+                barEl.className = 'bg-indigo-500 h-full transition-all duration-300';
+                valEl.className = 'text-2xl sm:text-3xl font-bold text-slate-800 font-mono';
             }
         }
 
-        function updateLEDVisual(isOn) {
-            if (isOn) {
-                ledVisual.className = 'w-28 h-28 rounded-full led-glow-on flex items-center justify-center transition-all duration-500 border-4 border-amber-300';
-                ledIcon.className = 'fa-solid fa-lightbulb text-5xl text-amber-900 transition-all duration-300 scale-110';
-                ledStateText.innerText = 'STATUS: LIGHT ON';
-                ledStateText.className = 'text-lg font-bold text-amber-400 tracking-wider animate-pulse';
-            } else {
-                ledVisual.className = 'w-28 h-28 rounded-full led-glow-off flex items-center justify-center transition-all duration-500 border-4 border-slate-700/50';
-                ledIcon.className = 'fa-solid fa-lightbulb text-5xl text-slate-600 transition-all duration-300 scale-100';
-                ledStateText.innerText = 'STATUS: LIGHT OFF';
-                ledStateText.className = 'text-lg font-bold text-slate-500 tracking-wider';
+        // 發送 LED 控制指令
+        let toastTimer;
+        function controlLED(state) {
+            if (!client.connected) {
+                showToast('尚未連線至 MQTT 伺服器，無法發送指令！', true);
+                return;
             }
+            client.publish(topic_LED1, state);
+            showToast(`已發送指令 "${state.toUpperCase()}" 至 ${topic_LED1}`, false);
         }
 
-        function updateStatusUI(state) {
-            switch (state) {
-                case 'connected':
-                    statusBadge.className = 'flex items-center gap-2.5 px-4 py-2 rounded-full bg-emerald-950/80 border border-emerald-500/30 text-sm font-medium text-emerald-300';
-                    statusDot.className = 'w-3 h-3 rounded-full bg-emerald-400 shadow-[0_0_10px_#34d399]';
-                    statusText.innerText = '連線成功';
-                    break;
-                case 'connecting':
-                    statusBadge.className = 'flex items-center gap-2.5 px-4 py-2 rounded-full bg-amber-950/80 border border-amber-500/30 text-sm font-medium text-amber-300';
-                    statusDot.className = 'w-3 h-3 rounded-full bg-amber-400 animate-ping';
-                    statusText.innerText = '連線中...';
-                    break;
-                case 'disconnected':
-                default:
-                    statusBadge.className = 'flex items-center gap-2.5 px-4 py-2 rounded-full bg-slate-800 border border-slate-700 text-sm font-medium text-slate-400';
-                    statusDot.className = 'w-3 h-3 rounded-full bg-slate-500';
-                    statusText.innerText = '未連線';
-                    break;
-            }
-        }
-
-        function logToTerminal(message, type = 'info') {
-            const timeStr = new Date().toLocaleTimeString('zh-TW', { hour12: false });
-            const logItem = document.createElement('div');
-            logItem.className = 'flex gap-2 py-0.5 border-b border-slate-800/40 last:border-none';
-
-            let colorClass = 'text-slate-300';
-            let prefix = 'ℹ️';
-
-            switch (type) {
-                case 'send':
-                    colorClass = 'text-amber-400 font-medium';
-                    prefix = '📤';
-                    break;
-                case 'receive':
-                    colorClass = 'text-emerald-400 font-medium';
-                    prefix = '📥';
-                    break;
-                case 'success':
-                    colorClass = 'text-teal-300';
-                    prefix = '✅';
-                    break;
-                case 'warning':
-                    colorClass = 'text-amber-300';
-                    prefix = '⚠️';
-                    break;
-                case 'error':
-                    colorClass = 'text-rose-400';
-                    prefix = '❌';
-                    break;
-            }
-
-            logItem.innerHTML = `
-                <span class="text-slate-500 shrink-0">[${timeStr}]</span>
-                <span class="shrink-0">${prefix}</span>
-                <span class="${colorClass} break-all">${escapeHtml(message)}</span>
-            `;
-
-            terminalLog.appendChild(logItem);
-            terminalLog.scrollTop = terminalLog.scrollHeight;
-        }
-
-        function clearTerminal() {
-            terminalLog.innerHTML = '<div class="text-slate-500 italic">[系統] 日誌已清除。</div>';
-        }
-
-        function escapeHtml(text) {
-            return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-        }
-
-        function playClickAudio() {
-            try {
-                const ctx = new (window.AudioContext || window.webkitAudioContext)();
-                const osc = ctx.createOscillator();
-                const gain = ctx.createGain();
-                osc.type = 'sine';
-                osc.frequency.setValueAtTime(600, ctx.currentTime);
-                osc.frequency.exponentialRampToValueAtTime(300, ctx.currentTime + 0.05);
-                gain.gain.setValueAtTime(0.15, ctx.currentTime);
-                gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.05);
-                osc.connect(gain);
-                gain.connect(ctx.destination);
-                osc.start();
-                osc.stop(ctx.currentTime + 0.05);
-            } catch (e) {}
+        function showToast(text, isError) {
+            toastMsg.innerText = text;
+            toastMsg.className = isError 
+                ? 'mt-3 text-xs font-medium text-rose-600 bg-rose-50 border border-rose-100 rounded-lg px-3 py-2 block'
+                : 'mt-3 text-xs font-medium text-blue-600 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 block';
+            
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => {
+                toastMsg.classList.add('hidden');
+            }, 3000);
         }
     </script>
 </body>
